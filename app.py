@@ -5,41 +5,42 @@ from PIL import Image
 import io
 
 
-# =========================================================
+# ============================================================
 # PAGE
-# =========================================================
+# ============================================================
 
 st.set_page_config(
-    page_title="Smart Document Scanner",
+    page_title="Magic Document Scanner",
     page_icon="📄",
     layout="wide"
 )
 
 
-# =========================================================
+# ============================================================
 # CSS
-# =========================================================
+# ============================================================
 
 st.markdown("""
 <style>
 
-.main-title {
-    font-size: 38px;
-    font-weight: 700;
+.block-container {
+    padding-top: 2rem;
+    padding-bottom: 3rem;
+}
+
+h1 {
     text-align: center;
-    margin-bottom: 5px;
 }
 
 .subtitle {
     text-align: center;
-    color: #666;
-    margin-bottom: 30px;
+    color: #777;
+    margin-bottom: 25px;
 }
 
-.stButton > button {
+div.stButton > button {
     width: 100%;
-    height: 48px;
-    font-size: 17px;
+    min-height: 46px;
     font-weight: 600;
 }
 
@@ -47,24 +48,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# =========================================================
+# ============================================================
 # TITLE
-# =========================================================
+# ============================================================
+
+st.title("📄 Magic Document Scanner")
 
 st.markdown(
-    '<div class="main-title">📄 Smart Document Scanner</div>',
+    '<div class="subtitle">'
+    'CamScanner-style automatic crop, clean white paper, '
+    'sharp text and printer-friendly scanning'
+    '</div>',
     unsafe_allow_html=True
 )
 
-st.markdown(
-    '<div class="subtitle">CamScanner / HP Scanner style document enhancement</div>',
-    unsafe_allow_html=True
-)
 
-
-# =========================================================
-# FUNCTIONS
-# =========================================================
+# ============================================================
+# IMAGE CONVERSION
+# ============================================================
 
 def pil_to_cv(image):
 
@@ -78,80 +79,119 @@ def pil_to_cv(image):
 
 def cv_to_pil(image):
 
-    image = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2RGB
+    if len(image.shape) == 2:
+        return Image.fromarray(image)
+
+    return Image.fromarray(
+        cv2.cvtColor(
+            image,
+            cv2.COLOR_BGR2RGB
+        )
     )
 
-    return Image.fromarray(image)
 
+# ============================================================
+# RESIZE
+# ============================================================
 
-def resize_for_processing(image, max_width=1800):
+def resize_for_detection(image, max_width=1600):
 
-    height, width = image.shape[:2]
+    h, w = image.shape[:2]
 
-    if width <= max_width:
+    if w <= max_width:
         return image
 
-    ratio = max_width / width
-
-    new_size = (
-        int(width * ratio),
-        int(height * ratio)
-    )
+    ratio = max_width / w
 
     return cv2.resize(
         image,
-        new_size,
+        (
+            int(w * ratio),
+            int(h * ratio)
+        ),
         interpolation=cv2.INTER_AREA
     )
 
 
-# =========================================================
-# AUTO DOCUMENT SCAN
-# =========================================================
+# ============================================================
+# ORDER CORNERS
+# ============================================================
 
-def scan_document(image):
+def order_points(points):
 
-    image = resize_for_processing(image)
+    points = np.array(
+        points,
+        dtype=np.float32
+    )
 
-    original = image.copy()
+    s = points.sum(axis=1)
+
+    diff = np.diff(
+        points,
+        axis=1
+    )
+
+    top_left = points[np.argmin(s)]
+
+    bottom_right = points[np.argmax(s)]
+
+    top_right = points[np.argmin(diff)]
+
+    bottom_left = points[np.argmax(diff)]
+
+    return np.array(
+        [
+            top_left,
+            top_right,
+            bottom_right,
+            bottom_left
+        ],
+        dtype=np.float32
+    )
+
+
+# ============================================================
+# AUTO DOCUMENT DETECTION
+# ============================================================
+
+def detect_document(image):
+
+    small = resize_for_detection(
+        image
+    )
 
     gray = cv2.cvtColor(
-        image,
+        small,
         cv2.COLOR_BGR2GRAY
     )
 
-    # Noise reduction
-    blur = cv2.GaussianBlur(
+    gray = cv2.GaussianBlur(
         gray,
         (5, 5),
         0
     )
 
-    # Edge detection
     edges = cv2.Canny(
-        blur,
-        50,
+        gray,
+        40,
         150
     )
 
-    # Strengthen edges
     kernel = np.ones(
         (5, 5),
         np.uint8
     )
 
-    edges = cv2.dilate(
+    edges = cv2.morphologyEx(
         edges,
+        cv2.MORPH_CLOSE,
         kernel,
-        iterations=1
+        iterations=2
     )
 
-    # Find contours
     contours, _ = cv2.findContours(
         edges,
-        cv2.RETR_LIST,
+        cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
 
@@ -161,13 +201,16 @@ def scan_document(image):
         reverse=True
     )
 
-    document = None
+    image_area = (
+        small.shape[0] *
+        small.shape[1]
+    )
 
-    image_area = image.shape[0] * image.shape[1]
+    for contour in contours[:50]:
 
-    for contour in contours[:30]:
-
-        area = cv2.contourArea(contour)
+        area = cv2.contourArea(
+            contour
+        )
 
         if area < image_area * 0.20:
             continue
@@ -185,59 +228,69 @@ def scan_document(image):
 
         if len(approx) == 4:
 
-            document = approx.reshape(4, 2)
+            points = approx.reshape(
+                4,
+                2
+            )
 
-            break
+            # Convert coordinates back
+            # to original image size.
 
-    if document is None:
+            sx = image.shape[1] / small.shape[1]
+            sy = image.shape[0] / small.shape[0]
 
-        return original, False
+            points = points.astype(
+                np.float32
+            )
 
-    # Order corners
-    pts = document.astype(np.float32)
+            points[:, 0] *= sx
+            points[:, 1] *= sy
 
-    s = pts.sum(axis=1)
+            return order_points(
+                points
+            )
 
-    diff = np.diff(
-        pts,
-        axis=1
+    return None
+
+
+# ============================================================
+# PERSPECTIVE TRANSFORM
+# ============================================================
+
+def perspective_crop(
+    image,
+    points,
+    margin=8
+):
+
+    rect = order_points(
+        points
     )
 
-    top_left = pts[np.argmin(s)]
-    bottom_right = pts[np.argmax(s)]
-    top_right = pts[np.argmin(diff)]
-    bottom_left = pts[np.argmax(diff)]
+    tl, tr, br, bl = rect
 
-    ordered = np.array([
-        top_left,
-        top_right,
-        bottom_right,
-        bottom_left
-    ], dtype=np.float32)
-
-    # Calculate dimensions
-    width_a = np.linalg.norm(
-        bottom_right - bottom_left
+    width1 = np.linalg.norm(
+        br - bl
     )
 
-    width_b = np.linalg.norm(
-        top_right - top_left
+    width2 = np.linalg.norm(
+        tr - tl
     )
 
     max_width = int(
-        max(width_a, width_b)
+        max(width1, width2)
     )
 
-    height_a = np.linalg.norm(
-        top_right - bottom_right
+    height1 = np.linalg.norm(
+        tr - br
     )
 
-    height_b = np.linalg.norm(
-        top_left - bottom_left
+    height2 = np.linalg.norm(
+        tl - bl
     )
 
     max_height = int(
-        max(height_a, height_b)
+        max(height1, height2)
     )
 
     max_width = max(
@@ -250,142 +303,63 @@ def scan_document(image):
         500
     )
 
-    destination = np.array([
-        [0, 0],
-        [max_width - 1, 0],
-        [max_width - 1, max_height - 1],
-        [0, max_height - 1]
-    ], dtype=np.float32)
+    destination = np.array(
+        [
+            [0, 0],
+            [max_width - 1, 0],
+            [max_width - 1, max_height - 1],
+            [0, max_height - 1]
+        ],
+        dtype=np.float32
+    )
 
     matrix = cv2.getPerspectiveTransform(
-        ordered,
+        rect,
         destination
     )
 
-    warped = cv2.warpPerspective(
+    result = cv2.warpPerspective(
         image,
         matrix,
-        (max_width, max_height)
+        (
+            max_width,
+            max_height
+        ),
+        flags=cv2.INTER_CUBIC
     )
 
-    return warped, True
+    # Small white border removal
+    if margin > 0:
 
+        h, w = result.shape[:2]
 
-# =========================================================
-# SCANNER FILTERS
-# =========================================================
-
-def original_filter(image):
-
-    return image
-
-
-def auto_color(image):
-
-    lab = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2LAB
-    )
-
-    l, a, b = cv2.split(lab)
-
-    clahe = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8)
-    )
-
-    l = clahe.apply(l)
-
-    result = cv2.merge([
-        l,
-        a,
-        b
-    ])
-
-    return cv2.cvtColor(
-        result,
-        cv2.COLOR_LAB2BGR
-    )
-
-
-def document_color(image):
-
-    result = auto_color(image)
-
-    # Slight sharpening
-    kernel = np.array([
-        [0, -1, 0],
-        [-1, 5, -1],
-        [0, -1, 0]
-    ])
-
-    result = cv2.filter2D(
-        result,
-        -1,
-        kernel
-    )
+        if (
+            h > margin * 2 and
+            w > margin * 2
+        ):
+            result = result[
+                margin:h-margin,
+                margin:w-margin
+            ]
 
     return result
 
 
-def grayscale_filter(image):
+# ============================================================
+# SHADOW / BACKGROUND REMOVAL
+# ============================================================
 
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY
-    )
+def remove_shadows(gray):
 
-    gray = cv2.createCLAHE(
-        clipLimit=2.0,
-        tileGridSize=(8, 8)
-    ).apply(gray)
-
-    return cv2.cvtColor(
-        gray,
-        cv2.COLOR_GRAY2BGR
-    )
-
-
-def black_white_filter(image):
-
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    gray = cv2.GaussianBlur(
-        gray,
-        (3, 3),
-        0
-    )
-
-    result = cv2.adaptiveThreshold(
-        gray,
-        255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY,
-        31,
-        11
-    )
-
-    return cv2.cvtColor(
-        result,
-        cv2.COLOR_GRAY2BGR
-    )
-
-
-def magic_filter(image):
-
-    gray = cv2.cvtColor(
-        image,
-        cv2.COLOR_BGR2GRAY
-    )
-
-    # Remove uneven lighting
     background = cv2.GaussianBlur(
         gray,
         (0, 0),
         25
+    )
+
+    background = np.maximum(
+        background,
+        1
     )
 
     normalized = cv2.divide(
@@ -402,47 +376,234 @@ def magic_filter(image):
         cv2.NORM_MINMAX
     )
 
-    # Sharpen
-    sharpen = cv2.addWeighted(
-        normalized,
-        1.4,
-        cv2.GaussianBlur(
-            normalized,
-            (0, 0),
-            2
-        ),
-        -0.4,
+    return normalized
+
+
+# ============================================================
+# MAGIC SCAN
+# ============================================================
+
+def magic_scan(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # Shadow correction
+    gray = remove_shadows(
+        gray
+    )
+
+    # Local contrast
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    gray = clahe.apply(
+        gray
+    )
+
+    # Gentle denoise
+    gray = cv2.bilateralFilter(
+        gray,
+        7,
+        35,
+        35
+    )
+
+    # Slight sharpening
+    blur = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        1.2
+    )
+
+    sharp = cv2.addWeighted(
+        gray,
+        1.35,
+        blur,
+        -0.35,
         0
     )
 
-    return cv2.cvtColor(
-        sharpen,
-        cv2.COLOR_GRAY2BGR
+    # Adaptive white background
+    bw = cv2.adaptiveThreshold(
+        sharp,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        8
     )
 
+    # Remove tiny black noise
+    kernel = np.ones(
+        (2, 2),
+        np.uint8
+    )
 
-# =========================================================
-# IMAGE DOWNLOAD
-# =========================================================
+    bw = cv2.morphologyEx(
+        bw,
+        cv2.MORPH_OPEN,
+        kernel
+    )
 
-def image_bytes(image):
+    return bw
 
-    image = cv_to_pil(image)
+
+# ============================================================
+# CLEAN COLOR SCAN
+# ============================================================
+
+def magic_color(image):
+
+    lab = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2LAB
+    )
+
+    l, a, b = cv2.split(
+        lab
+    )
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    l = clahe.apply(
+        l
+    )
+
+    result = cv2.merge(
+        [l, a, b]
+    )
+
+    result = cv2.cvtColor(
+        result,
+        cv2.COLOR_LAB2BGR
+    )
+
+    # Gentle sharpening
+    blur = cv2.GaussianBlur(
+        result,
+        (0, 0),
+        1
+    )
+
+    result = cv2.addWeighted(
+        result,
+        1.25,
+        blur,
+        -0.25,
+        0
+    )
+
+    return result
+
+
+# ============================================================
+# GRAYSCALE
+# ============================================================
+
+def grayscale_scan(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    gray = remove_shadows(
+        gray
+    )
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    gray = clahe.apply(
+        gray
+    )
+
+    return gray
+
+
+# ============================================================
+# PRINTER MODE
+# ============================================================
+
+def printer_scan(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    gray = remove_shadows(
+        gray
+    )
+
+    # Very clean paper
+    bw = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        41,
+        10
+    )
+
+    # Remove tiny dust
+    kernel = np.ones(
+        (2, 2),
+        np.uint8
+    )
+
+    bw = cv2.morphologyEx(
+        bw,
+        cv2.MORPH_OPEN,
+        kernel
+    )
+
+    return bw
+
+
+# ============================================================
+# SAVE IMAGE
+# ============================================================
+
+def encode_jpg(image):
+
+    if len(image.shape) == 2:
+
+        pil = Image.fromarray(
+            image
+        )
+
+    else:
+
+        pil = cv_to_pil(
+            image
+        )
 
     buffer = io.BytesIO()
 
-    image.save(
+    pil.save(
         buffer,
         format="JPEG",
-        quality=95
+        quality=97,
+        subsampling=0
     )
 
     return buffer.getvalue()
 
 
-# =========================================================
+# ============================================================
 # UPLOAD
-# =========================================================
+# ============================================================
 
 uploaded = st.file_uploader(
     "📷 Document ki photo upload karein",
@@ -457,133 +618,234 @@ uploaded = st.file_uploader(
 
 if uploaded:
 
-    original_pil = Image.open(uploaded)
+    original = Image.open(
+        uploaded
+    ).convert("RGB")
 
     original_cv = pil_to_cv(
-        original_pil
+        original
     )
 
-    st.divider()
-
-    # =====================================================
-    # AUTO SCAN
-    # =====================================================
+    # ========================================================
+    # AUTO DETECT
+    # ========================================================
 
     with st.spinner(
-        "Document detect aur scan ho raha hai..."
+        "Document detect ho raha hai..."
     ):
 
-        scanned, detected = scan_document(
+        detected_points = detect_document(
             original_cv
         )
 
-    if detected:
+
+    if detected_points is not None:
 
         st.success(
-            "Document automatically detect ho gaya."
+            "✓ Document automatically detect ho gaya"
+        )
+
+        scanned_base = perspective_crop(
+            original_cv,
+            detected_points
         )
 
     else:
 
         st.warning(
-            "Document edges automatically detect nahi hue. "
-            "Original image ko process kiya gaya hai."
+            "Automatic crop nahi mila. "
+            "Full image use ki ja rahi hai."
         )
 
+        scanned_base = original_cv.copy()
 
-    # =====================================================
-    # FILTER
-    # =====================================================
 
-    st.subheader("🎨 Scanner Mode")
+    # ========================================================
+    # CROP ADJUSTMENT
+    # ========================================================
 
-    filter_name = st.selectbox(
-        "Document style select karein",
+    st.divider()
 
-        [
-            "Auto Color",
-            "Magic Scan",
-            "Document Color",
-            "Grayscale",
-            "Black & White",
-            "Original"
-        ]
+    st.subheader(
+        "✂️ Crop / Perspective"
+    )
+
+    st.caption(
+        "Auto crop ke baad agar page ka corner galat ho "
+        "to neeche adjustment controls use karein."
     )
 
 
-    if filter_name == "Auto Color":
+    # Manual percentage crop controls
+    c1, c2, c3, c4 = st.columns(4)
 
-        final_image = auto_color(
-            scanned
+    with c1:
+        top_crop = st.slider(
+            "Top",
+            0,
+            20,
+            0
         )
 
-    elif filter_name == "Magic Scan":
-
-        final_image = magic_filter(
-            scanned
+    with c2:
+        bottom_crop = st.slider(
+            "Bottom",
+            0,
+            20,
+            0
         )
 
-    elif filter_name == "Document Color":
-
-        final_image = document_color(
-            scanned
+    with c3:
+        left_crop = st.slider(
+            "Left",
+            0,
+            20,
+            0
         )
 
-    elif filter_name == "Grayscale":
-
-        final_image = grayscale_filter(
-            scanned
+    with c4:
+        right_crop = st.slider(
+            "Right",
+            0,
+            20,
+            0
         )
 
-    elif filter_name == "Black & White":
 
-        final_image = black_white_filter(
-            scanned
+    h, w = scanned_base.shape[:2]
+
+    y1 = int(
+        h * top_crop / 100
+    )
+
+    y2 = int(
+        h * (1 - bottom_crop / 100)
+    )
+
+    x1 = int(
+        w * left_crop / 100
+    )
+
+    x2 = int(
+        w * (1 - right_crop / 100)
+    )
+
+    if x2 > x1 and y2 > y1:
+
+        cropped = scanned_base[
+            y1:y2,
+            x1:x2
+        ]
+
+    else:
+
+        cropped = scanned_base
+
+
+    # ========================================================
+    # FILTER
+    # ========================================================
+
+    st.divider()
+
+    st.subheader(
+        "✨ Magic Scanner"
+    )
+
+    mode = st.radio(
+        "Scan Mode",
+
+        [
+            "Magic White",
+            "Magic Color",
+            "Printer Clean",
+            "Grayscale",
+            "Original"
+        ],
+
+        horizontal=True
+    )
+
+
+    if mode == "Magic White":
+
+        result = magic_scan(
+            cropped
+        )
+
+    elif mode == "Magic Color":
+
+        result = magic_color(
+            cropped
+        )
+
+    elif mode == "Printer Clean":
+
+        result = printer_scan(
+            cropped
+        )
+
+    elif mode == "Grayscale":
+
+        result = grayscale_scan(
+            cropped
         )
 
     else:
 
-        final_image = scanned
+        result = cropped
 
 
-    # =====================================================
+    # ========================================================
     # PREVIEW
-    # =====================================================
+    # ========================================================
+
+    st.divider()
 
     col1, col2 = st.columns(2)
 
     with col1:
 
-        st.subheader("📷 Original")
+        st.subheader(
+            "📷 Original"
+        )
 
         st.image(
-            original_pil,
+            original,
             use_container_width=True
         )
 
 
     with col2:
 
-        st.subheader("✨ Scanned Result")
+        st.subheader(
+            "✨ Final Scan"
+        )
 
         st.image(
-            cv_to_pil(final_image),
+            cv_to_pil(result),
             use_container_width=True
         )
 
 
-    # =====================================================
+    # ========================================================
     # DOWNLOAD
-    # =====================================================
+    # ========================================================
 
     st.divider()
 
-    st.subheader("💾 Download")
+    st.subheader(
+        "💾 Download"
+    )
+
+    jpg_data = encode_jpg(
+        result
+    )
 
     st.download_button(
-        "⬇️ Download Scanned Document",
-        data=image_bytes(final_image),
-        file_name="scanned_document.jpg",
+        "⬇️ Download High Quality Scan",
+        data=jpg_data,
+        file_name="magic_scan.jpg",
         mime="image/jpeg",
         use_container_width=True
     )
