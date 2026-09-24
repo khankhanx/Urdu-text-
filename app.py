@@ -72,7 +72,7 @@ def image_to_bytes(image: Image.Image) -> bytes:
 def extract_text(image: Image.Image) -> str:
     img_bytes = image_to_bytes(image)
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-3.6-flash",
         contents=[
             types.Part.from_bytes(data=img_bytes, mime_type="image/png"),
             types.Part.from_text(text=OCR_PROMPT),
