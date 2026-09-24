@@ -1,4 +1,4 @@
 streamlit
-groq
+opencv-python-headless
+numpy
 Pillow
-PyMuPDF
