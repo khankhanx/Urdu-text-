@@ -1,128 +1,433 @@
 import streamlit as st
-from groq import Groq
+import cv2
+import numpy as np
 from PIL import Image
-import fitz
 import io
-import base64
 
 
-# ─────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────
+# =========================================================
+# PAGE
+# =========================================================
+
 st.set_page_config(
-    page_title="Urdu / English OCR Editor",
+    page_title="Smart Document Scanner",
     page_icon="📄",
     layout="wide"
 )
 
 
-# ─────────────────────────────────────────
+# =========================================================
 # CSS
-# ─────────────────────────────────────────
+# =========================================================
+
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&display=swap');
 
-textarea {
-    font-family: 'Noto Nastaliq Urdu', serif !important;
-    direction: rtl !important;
-    text-align: right !important;
-    line-height: 2.5 !important;
-    background-color: #fffdf5 !important;
+.main-title {
+    font-size: 38px;
+    font-weight: 700;
+    text-align: center;
+    margin-bottom: 5px;
 }
+
+.subtitle {
+    text-align: center;
+    color: #666;
+    margin-bottom: 30px;
+}
+
+.stButton > button {
+    width: 100%;
+    height: 48px;
+    font-size: 17px;
+    font-weight: 600;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────
-# GROQ API
-# ─────────────────────────────────────────
-if "GROQ_API_KEY" not in st.secrets:
-    st.error("GROQ_API_KEY Streamlit Secrets mein nahi mili.")
-    st.stop()
+# =========================================================
+# TITLE
+# =========================================================
 
-client = Groq(
-    api_key=st.secrets["GROQ_API_KEY"]
+st.markdown(
+    '<div class="main-title">📄 Smart Document Scanner</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">CamScanner / HP Scanner style document enhancement</div>',
+    unsafe_allow_html=True
 )
 
 
-# ─────────────────────────────────────────
-# MODEL
-# ─────────────────────────────────────────
-MODEL_NAME = "qwen/qwen3.8-27b"
+# =========================================================
+# FUNCTIONS
+# =========================================================
 
+def pil_to_cv(image):
 
-# ─────────────────────────────────────────
-# OCR PROMPT
-# ─────────────────────────────────────────
-OCR_PROMPT = """
-You are a professional OCR system specialized in Urdu Nastaliq
-and English scanned documents.
+    image = image.convert("RGB")
 
-Extract ALL visible text from the image.
-
-STRICT RULES:
-
-1. Extract everything visible.
-2. Do not summarize.
-3. Do not translate.
-4. Do not rewrite.
-5. Do not correct spelling.
-6. Preserve Urdu exactly as visible.
-7. Preserve English exactly as visible.
-8. Preserve numbers and dates.
-9. Preserve punctuation.
-10. Preserve paragraphs.
-11. Preserve line breaks as much as possible.
-12. Preserve headings.
-13. Preserve the original reading order.
-14. If a word is genuinely unreadable, write [unclear].
-15. Do not add explanations.
-16. Do not add comments.
-
-Return ONLY the extracted text.
-"""
-
-
-# ─────────────────────────────────────────
-# PDF → IMAGE
-# ─────────────────────────────────────────
-def pdf_to_image(uploaded_file):
-
-    pdf_bytes = uploaded_file.read()
-
-    doc = fitz.open(
-        stream=pdf_bytes,
-        filetype="pdf"
-    )
-
-    if len(doc) == 0:
-        doc.close()
-        raise ValueError("PDF mein koi page nahi mila.")
-
-    page = doc[0]
-
-    pix = page.get_pixmap(
-        dpi=250,
-        alpha=False
-    )
-
-    image_bytes = pix.tobytes("png")
-
-    doc.close()
-
-    return Image.open(
-        io.BytesIO(image_bytes)
+    return cv2.cvtColor(
+        np.array(image),
+        cv2.COLOR_RGB2BGR
     )
 
 
-# ─────────────────────────────────────────
-# IMAGE → BASE64
-# ─────────────────────────────────────────
-def image_to_base64(image):
+def cv_to_pil(image):
 
-    if image.mode != "RGB":
-        image = image.convert("RGB")
+    image = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2RGB
+    )
+
+    return Image.fromarray(image)
+
+
+def resize_for_processing(image, max_width=1800):
+
+    height, width = image.shape[:2]
+
+    if width <= max_width:
+        return image
+
+    ratio = max_width / width
+
+    new_size = (
+        int(width * ratio),
+        int(height * ratio)
+    )
+
+    return cv2.resize(
+        image,
+        new_size,
+        interpolation=cv2.INTER_AREA
+    )
+
+
+# =========================================================
+# AUTO DOCUMENT SCAN
+# =========================================================
+
+def scan_document(image):
+
+    image = resize_for_processing(image)
+
+    original = image.copy()
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # Noise reduction
+    blur = cv2.GaussianBlur(
+        gray,
+        (5, 5),
+        0
+    )
+
+    # Edge detection
+    edges = cv2.Canny(
+        blur,
+        50,
+        150
+    )
+
+    # Strengthen edges
+    kernel = np.ones(
+        (5, 5),
+        np.uint8
+    )
+
+    edges = cv2.dilate(
+        edges,
+        kernel,
+        iterations=1
+    )
+
+    # Find contours
+    contours, _ = cv2.findContours(
+        edges,
+        cv2.RETR_LIST,
+        cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    contours = sorted(
+        contours,
+        key=cv2.contourArea,
+        reverse=True
+    )
+
+    document = None
+
+    image_area = image.shape[0] * image.shape[1]
+
+    for contour in contours[:30]:
+
+        area = cv2.contourArea(contour)
+
+        if area < image_area * 0.20:
+            continue
+
+        perimeter = cv2.arcLength(
+            contour,
+            True
+        )
+
+        approx = cv2.approxPolyDP(
+            contour,
+            0.02 * perimeter,
+            True
+        )
+
+        if len(approx) == 4:
+
+            document = approx.reshape(4, 2)
+
+            break
+
+    if document is None:
+
+        return original, False
+
+    # Order corners
+    pts = document.astype(np.float32)
+
+    s = pts.sum(axis=1)
+
+    diff = np.diff(
+        pts,
+        axis=1
+    )
+
+    top_left = pts[np.argmin(s)]
+    bottom_right = pts[np.argmax(s)]
+    top_right = pts[np.argmin(diff)]
+    bottom_left = pts[np.argmax(diff)]
+
+    ordered = np.array([
+        top_left,
+        top_right,
+        bottom_right,
+        bottom_left
+    ], dtype=np.float32)
+
+    # Calculate dimensions
+    width_a = np.linalg.norm(
+        bottom_right - bottom_left
+    )
+
+    width_b = np.linalg.norm(
+        top_right - top_left
+    )
+
+    max_width = int(
+        max(width_a, width_b)
+    )
+
+    height_a = np.linalg.norm(
+        top_right - bottom_right
+    )
+
+    height_b = np.linalg.norm(
+        top_left - bottom_left
+    )
+
+    max_height = int(
+        max(height_a, height_b)
+    )
+
+    max_width = max(
+        max_width,
+        500
+    )
+
+    max_height = max(
+        max_height,
+        500
+    )
+
+    destination = np.array([
+        [0, 0],
+        [max_width - 1, 0],
+        [max_width - 1, max_height - 1],
+        [0, max_height - 1]
+    ], dtype=np.float32)
+
+    matrix = cv2.getPerspectiveTransform(
+        ordered,
+        destination
+    )
+
+    warped = cv2.warpPerspective(
+        image,
+        matrix,
+        (max_width, max_height)
+    )
+
+    return warped, True
+
+
+# =========================================================
+# SCANNER FILTERS
+# =========================================================
+
+def original_filter(image):
+
+    return image
+
+
+def auto_color(image):
+
+    lab = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2LAB
+    )
+
+    l, a, b = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    )
+
+    l = clahe.apply(l)
+
+    result = cv2.merge([
+        l,
+        a,
+        b
+    ])
+
+    return cv2.cvtColor(
+        result,
+        cv2.COLOR_LAB2BGR
+    )
+
+
+def document_color(image):
+
+    result = auto_color(image)
+
+    # Slight sharpening
+    kernel = np.array([
+        [0, -1, 0],
+        [-1, 5, -1],
+        [0, -1, 0]
+    ])
+
+    result = cv2.filter2D(
+        result,
+        -1,
+        kernel
+    )
+
+    return result
+
+
+def grayscale_filter(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    gray = cv2.createCLAHE(
+        clipLimit=2.0,
+        tileGridSize=(8, 8)
+    ).apply(gray)
+
+    return cv2.cvtColor(
+        gray,
+        cv2.COLOR_GRAY2BGR
+    )
+
+
+def black_white_filter(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    gray = cv2.GaussianBlur(
+        gray,
+        (3, 3),
+        0
+    )
+
+    result = cv2.adaptiveThreshold(
+        gray,
+        255,
+        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY,
+        31,
+        11
+    )
+
+    return cv2.cvtColor(
+        result,
+        cv2.COLOR_GRAY2BGR
+    )
+
+
+def magic_filter(image):
+
+    gray = cv2.cvtColor(
+        image,
+        cv2.COLOR_BGR2GRAY
+    )
+
+    # Remove uneven lighting
+    background = cv2.GaussianBlur(
+        gray,
+        (0, 0),
+        25
+    )
+
+    normalized = cv2.divide(
+        gray,
+        background,
+        scale=255
+    )
+
+    normalized = cv2.normalize(
+        normalized,
+        None,
+        0,
+        255,
+        cv2.NORM_MINMAX
+    )
+
+    # Sharpen
+    sharpen = cv2.addWeighted(
+        normalized,
+        1.4,
+        cv2.GaussianBlur(
+            normalized,
+            (0, 0),
+            2
+        ),
+        -0.4,
+        0
+    )
+
+    return cv2.cvtColor(
+        sharpen,
+        cv2.COLOR_GRAY2BGR
+    )
+
+
+# =========================================================
+# IMAGE DOWNLOAD
+# =========================================================
+
+def image_bytes(image):
+
+    image = cv_to_pil(image)
 
     buffer = io.BytesIO()
 
@@ -132,226 +437,153 @@ def image_to_base64(image):
         quality=95
     )
 
-    return base64.b64encode(
-        buffer.getvalue()
-    ).decode("utf-8")
+    return buffer.getvalue()
 
 
-# ─────────────────────────────────────────
-# OCR FUNCTION
-# ─────────────────────────────────────────
-def extract_text(image):
-
-    image_base64 = image_to_base64(image)
-
-    response = client.chat.completions.create(
-
-        model=MODEL_NAME,
-
-        messages=[
-
-            {
-                "role": "system",
-                "content": OCR_PROMPT
-            },
-
-            {
-                "role": "user",
-                "content": [
-
-                    {
-                        "type": "text",
-                        "text": "Extract all text from this document."
-                    },
-
-                    {
-                        "type": "image_url",
-                        "image_url": {
-                            "url": (
-                                f"data:image/jpeg;base64,"
-                                f"{image_base64}"
-                            )
-                        }
-                    }
-
-                ]
-            }
-
-        ],
-
-        temperature=0,
-
-        max_completion_tokens=8192,
-
-        reasoning_effort="none"
-    )
-
-    result = response.choices[0].message.content
-
-    if not result:
-        raise ValueError(
-            "Groq ne koi text return nahi kiya."
-        )
-
-    return result
-
-
-# ─────────────────────────────────────────
-# TITLE
-# ─────────────────────────────────────────
-st.title("📄 Urdu / English OCR Editor")
-
-st.caption(
-    "Scan شدہ دستاویز اپلوڈ کریں — قابلِ ترمیم متن حاصل کریں"
-)
-
-
-# ─────────────────────────────────────────
+# =========================================================
 # UPLOAD
-# ─────────────────────────────────────────
+# =========================================================
+
 uploaded = st.file_uploader(
-    "Image یا PDF اپلوڈ کریں",
+    "📷 Document ki photo upload karein",
     type=[
-        "png",
         "jpg",
         "jpeg",
-        "pdf"
+        "png",
+        "webp"
     ]
 )
 
 
 if uploaded:
 
-    # ─────────────────────────────────────
-    # OPEN FILE
-    # ─────────────────────────────────────
-    try:
+    original_pil = Image.open(uploaded)
 
-        if uploaded.type == "application/pdf":
+    original_cv = pil_to_cv(
+        original_pil
+    )
 
-            image = pdf_to_image(uploaded)
+    st.divider()
 
-        else:
+    # =====================================================
+    # AUTO SCAN
+    # =====================================================
 
-            image = Image.open(uploaded)
+    with st.spinner(
+        "Document detect aur scan ho raha hai..."
+    ):
 
-            if image.mode != "RGB":
-                image = image.convert("RGB")
-
-    except Exception as e:
-
-        st.error(
-            f"File open نہیں ہو سکی: {str(e)}"
+        scanned, detected = scan_document(
+            original_cv
         )
 
-        st.stop()
+    if detected:
+
+        st.success(
+            "Document automatically detect ho gaya."
+        )
+
+    else:
+
+        st.warning(
+            "Document edges automatically detect nahi hue. "
+            "Original image ko process kiya gaya hai."
+        )
 
 
-    # ─────────────────────────────────────
-    # TWO COLUMNS
-    # ─────────────────────────────────────
+    # =====================================================
+    # FILTER
+    # =====================================================
+
+    st.subheader("🎨 Scanner Mode")
+
+    filter_name = st.selectbox(
+        "Document style select karein",
+
+        [
+            "Auto Color",
+            "Magic Scan",
+            "Document Color",
+            "Grayscale",
+            "Black & White",
+            "Original"
+        ]
+    )
+
+
+    if filter_name == "Auto Color":
+
+        final_image = auto_color(
+            scanned
+        )
+
+    elif filter_name == "Magic Scan":
+
+        final_image = magic_filter(
+            scanned
+        )
+
+    elif filter_name == "Document Color":
+
+        final_image = document_color(
+            scanned
+        )
+
+    elif filter_name == "Grayscale":
+
+        final_image = grayscale_filter(
+            scanned
+        )
+
+    elif filter_name == "Black & White":
+
+        final_image = black_white_filter(
+            scanned
+        )
+
+    else:
+
+        final_image = scanned
+
+
+    # =====================================================
+    # PREVIEW
+    # =====================================================
+
     col1, col2 = st.columns(2)
 
-
-    # ─────────────────────────────────────
-    # ORIGINAL DOCUMENT
-    # ─────────────────────────────────────
     with col1:
 
-        st.subheader("📷 اپلوڈ شدہ دستاویز")
+        st.subheader("📷 Original")
 
         st.image(
-            image,
+            original_pil,
             use_container_width=True
         )
 
 
-    # ─────────────────────────────────────
-    # OCR EDITOR
-    # ─────────────────────────────────────
     with col2:
 
-        st.subheader("✏️ قابلِ ترمیم متن")
+        st.subheader("✨ Scanned Result")
 
-
-        font_size = st.slider(
-            "Font Size",
-            min_value=14,
-            max_value=36,
-            value=20,
-            step=2
-        )
-
-
-        st.markdown(
-            f"""
-            <style>
-            textarea {{
-                font-size: {font_size}px !important;
-            }}
-            </style>
-            """,
-            unsafe_allow_html=True
-        )
-
-
-        # ─────────────────────────────────
-        # EXTRACT BUTTON
-        # ─────────────────────────────────
-        if st.button(
-            "🔍 متن نکالیں (Extract Text)",
+        st.image(
+            cv_to_pil(final_image),
             use_container_width=True
-        ):
-
-            with st.spinner(
-                "متن نکالا جا رہا ہے..."
-            ):
-
-                try:
-
-                    extracted = extract_text(image)
-
-                    st.session_state[
-                        "extracted_text"
-                    ] = extracted
-
-                    st.success(
-                        "متن کامیابی سے نکال لیا گیا ✅"
-                    )
-
-                except Exception as e:
-
-                    st.error(
-                        f"Groq API Error: {str(e)}"
-                    )
+        )
 
 
-        # ─────────────────────────────────
-        # TEXT EDITOR
-        # ─────────────────────────────────
-        if "extracted_text" in st.session_state:
+    # =====================================================
+    # DOWNLOAD
+    # =====================================================
 
-            edited_text = st.text_area(
-                "متن یہاں ترمیم کریں",
-                value=st.session_state[
-                    "extracted_text"
-                ],
-                height=500,
-                key="editor"
-            )
+    st.divider()
 
+    st.subheader("💾 Download")
 
-            # ─────────────────────────────
-            # DOWNLOAD
-            # ─────────────────────────────
-            text_bytes = edited_text.encode(
-                "utf-8"
-            )
-
-            st.download_button(
-                label="💾 Text Download کریں",
-                data=text_bytes,
-                file_name="urdu_text.txt",
-                mime="text/plain",
-                use_container_width=True
-            )
+    st.download_button(
+        "⬇️ Download Scanned Document",
+        data=image_bytes(final_image),
+        file_name="scanned_document.jpg",
+        mime="image/jpeg",
+        use_container_width=True
+    )
