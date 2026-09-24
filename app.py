@@ -50,6 +50,8 @@ textarea {
 # ─── API Key ────────────────────────────────────────────────
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-2.0-flash")
+
+
 # ─── Prompt ─────────────────────────────────────────────────
 OCR_PROMPT = """
 You are an expert OCR assistant specializing in Urdu and English text extraction.
