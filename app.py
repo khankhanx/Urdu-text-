@@ -1,8 +1,7 @@
 import streamlit as st
-from google import genai
-from google.genai import types
+from groq import Groq
 from PIL import Image
-import fitz  # PyMuPDF
+import fitz
 import io
 import base64
 
@@ -15,7 +14,7 @@ st.set_page_config(
 )
 
 
-# ─── CSS Styling ──────────────────────────────────────────
+# ─── CSS ───────────────────────────────────────────────────
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Noto+Nastaliq+Urdu:wght@400;700&display=swap');
@@ -31,57 +30,50 @@ textarea {
 """, unsafe_allow_html=True)
 
 
-# ─── Gemini API Key ────────────────────────────────────────
+# ─── Groq API ──────────────────────────────────────────────
 try:
-    API_KEY = st.secrets["GEMINI_API_KEY"]
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
 except Exception:
-    st.error("GEMINI_API_KEY Streamlit Secrets mein nahi mili.")
+    st.error("GROQ_API_KEY Streamlit Secrets mein nahi mili.")
     st.stop()
 
 
-# ─── Gemini Client ─────────────────────────────────────────
-client = genai.Client(api_key=API_KEY)
+client = Groq(api_key=GROQ_API_KEY)
 
 
-# ─── Model ─────────────────────────────────────────────────
-MODEL_NAME = "gemini-3.6-flash"
+# ─── Vision Model ──────────────────────────────────────────
+MODEL_NAME = "qwen/qwen3.8-27b"
 
 
-# ─── OCR Prompt ─────────────────────────────────────────────
+# ─── OCR Prompt ────────────────────────────────────────────
 OCR_PROMPT = """
-You are an expert OCR assistant specializing in Urdu and English text extraction.
+You are an expert OCR system specializing in Urdu and English documents.
 
-You will receive an image of a scanned document that may contain:
+Extract ALL visible text from the supplied document image.
 
-- Urdu text written in Nastaliq style
-- English text
-- Mixed Urdu and English
-- Numbers
-- Headings
-- Tables
-- Official document formatting
+Rules:
 
-Your task:
-
-1. Extract ALL visible text from the image.
-2. Preserve the original wording exactly.
-3. Do NOT translate anything.
-4. Keep Urdu text in proper Urdu Unicode.
-5. Keep English text in English.
-6. Preserve line breaks as much as possible.
-7. Preserve headings and paragraphs.
-8. Preserve numbers and dates accurately.
-9. Do NOT add explanations.
-10. Do NOT summarize.
-11. Do NOT correct grammar or spelling.
-12. If a word is genuinely unreadable, write [unclear].
+1. Extract the text exactly as visible.
+2. Do NOT translate Urdu into English.
+3. Do NOT translate English into Urdu.
+4. Preserve Urdu Unicode correctly.
+5. Preserve English text exactly.
+6. Preserve numbers, dates and punctuation.
+7. Preserve line breaks where possible.
+8. Preserve headings and paragraphs.
+9. Preserve the document's original reading order.
+10. Do not summarize.
+11. Do not explain anything.
+12. Do not add information that is not visible.
+13. If a word is genuinely impossible to read, write [unclear].
 
 Return ONLY the extracted text.
 """
 
 
-# ─── PDF to Image ──────────────────────────────────────────
+# ─── PDF → Image ───────────────────────────────────────────
 def pdf_to_image(uploaded_file):
+
     pdf_bytes = uploaded_file.read()
 
     doc = fitz.open(
@@ -108,10 +100,9 @@ def pdf_to_image(uploaded_file):
     )
 
 
-# ─── Image to Bytes ────────────────────────────────────────
-def image_to_bytes(image: Image.Image) -> bytes:
+# ─── Image → Base64 ────────────────────────────────────────
+def image_to_base64(image):
 
-    # RGB mein convert karein
     if image.mode != "RGB":
         image = image.convert("RGB")
 
@@ -122,33 +113,53 @@ def image_to_bytes(image: Image.Image) -> bytes:
         format="PNG"
     )
 
-    return buffer.getvalue()
+    return base64.b64encode(
+        buffer.getvalue()
+    ).decode("utf-8")
 
 
-# ─── Extract Text ──────────────────────────────────────────
-def extract_text(image: Image.Image) -> str:
+# ─── OCR ──────────────────────────────────────────────────
+def extract_text(image):
 
-    img_bytes = image_to_bytes(image)
+    image_base64 = image_to_base64(image)
 
-    response = client.models.generate_content(
+    response = client.chat.completions.create(
         model=MODEL_NAME,
-        contents=[
-            types.Part.from_bytes(
-                data=img_bytes,
-                mime_type="image/png"
-            ),
-            types.Part.from_text(
-                text=OCR_PROMPT
-            ),
-        ]
+
+        messages=[
+            {
+                "role": "system",
+                "content": OCR_PROMPT
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Extract all text from this document image."
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{image_base64}"
+                        }
+                    }
+                ]
+            }
+        ],
+
+        temperature=0,
+        max_tokens=8192
     )
 
-    if not response.text:
+    text = response.choices[0].message.content
+
+    if not text:
         raise ValueError(
-            "Gemini ne koi text return nahi kiya."
+            "Model ne koi text return nahi kiya."
         )
 
-    return response.text
+    return text
 
 
 # ─── UI ────────────────────────────────────────────────────
@@ -172,7 +183,6 @@ uploaded = st.file_uploader(
 
 if uploaded:
 
-    # ─── Convert File ───────────────────────────────────────
     try:
 
         if uploaded.type == "application/pdf":
@@ -181,16 +191,18 @@ if uploaded:
             image = Image.open(uploaded)
 
     except Exception as e:
+
         st.error(
             f"File open نہیں ہو سکی: {str(e)}"
         )
+
         st.stop()
 
 
     col1, col2 = st.columns(2)
 
 
-    # ─── Left Side ─────────────────────────────────────────
+    # ─── Original Image ────────────────────────────────────
     with col1:
 
         st.subheader("📷 اپلوڈ شدہ دستاویز")
@@ -201,13 +213,11 @@ if uploaded:
         )
 
 
-    # ─── Right Side ────────────────────────────────────────
+    # ─── OCR Editor ────────────────────────────────────────
     with col2:
 
         st.subheader("✏️ قابلِ ترمیم متن")
 
-
-        # Font Size
         font_size = st.slider(
             "Font Size",
             min_value=14,
@@ -215,7 +225,6 @@ if uploaded:
             value=20,
             step=2
         )
-
 
         st.markdown(
             f"""
@@ -229,14 +238,13 @@ if uploaded:
         )
 
 
-        # Extract Button
         if st.button(
             "🔍 متن نکالیں (Extract Text)",
             use_container_width=True
         ):
 
             with st.spinner(
-                "متن نکالا جا رہا ہے... براہ کرم انتظار کریں"
+                "متن نکالا جا رہا ہے..."
             ):
 
                 try:
@@ -253,38 +261,11 @@ if uploaded:
 
                 except Exception as e:
 
-                    error_message = str(e)
-
-                    # Authentication Error
-                    if (
-                        "401" in error_message
-                        or "UNAUTHENTICATED" in error_message
-                        or "ACCESS_TOKEN_TYPE_UNSUPPORTED"
-                        in error_message
-                    ):
-
-                        st.error(
-                            "Gemini API authentication error ہے."
-                        )
-
-                        st.warning(
-                            """
-                            API key authenticate نہیں ہو رہی۔
-
-                            Streamlit Secrets میں GEMINI_API_KEY
-                            کو دوبارہ check کریں اور نئی API key
-                            کے ساتھ app کو redeploy کریں۔
-                            """
-                        )
-
-                    else:
-
-                        st.error(
-                            f"Gemini error: {error_message}"
-                        )
+                    st.error(
+                        f"Groq API Error: {str(e)}"
+                    )
 
 
-        # ─── Text Editor ───────────────────────────────────
         if "extracted_text" in st.session_state:
 
             edited_text = st.text_area(
